@@ -631,7 +631,7 @@
     <span id="sync-status-text" style="font-size:11px;">Sin sincronizar</span>
   </div>
   
-  <button class="btn-toolbar" id="btn-sync-now" style="display:none;padding:6px 12px;font-size:12px;" onclick="driveSubirDatos(true)" title="Sincronizar ahora">
+  <button class="btn-toolbar" id="btn-sync-now" style="display:none;padding:6px 12px;font-size:12px;" onclick="manejarClicSincronizar()" title="Sincronizar ahora">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
     Sincronizar
   </button>
@@ -1190,7 +1190,11 @@ function manejarRespuestaGoogle(respuesta) {
     localStorage.setItem(LS_USUARIO, JSON.stringify(driveUserInfo));
     mostrarPerfilActivo(driveUserInfo);
 
-    // Pedir token de acceso a Drive (appdata) para sincronizar
+    document.getElementById('sync-status-wrap').style.display = 'flex';
+    document.getElementById('btn-sync-now').style.display = 'inline-flex';
+    setSyncStatus('', 'Sin sincronizar — pulsa Sincronizar');
+
+    // Este clic SÍ es interacción directa del usuario (botón "Sign in with Google")
     solicitarAccesoDrive();
   } catch (err) {
     console.error('Error al procesar login de Google:', err);
@@ -1201,7 +1205,7 @@ function manejarRespuestaGoogle(respuesta) {
 /* ── Pedir / renovar token de acceso a Drive ── */
 function solicitarAccesoDrive() {
   if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
-    setTimeout(solicitarAccesoDrive, 500);
+    showToast('⏳', 'Cargando Google...', 'Espera un momento e intenta de nuevo.', 'info', 3000);
     return;
   }
   if (!_tokenClient) {
@@ -1214,8 +1218,6 @@ function solicitarAccesoDrive() {
           return;
         }
         driveAccessToken = tr.access_token;
-        document.getElementById('btn-sync-now').style.display = 'inline-flex';
-        document.getElementById('sync-status-wrap').style.display = 'flex';
         showToast('🔗', 'Conectado a Drive', `Sesión iniciada como ${escHtml(driveUserInfo.nombre)}. Buscando tus datos…`, 'success', 4000);
         driveCargarDatos();
       }
@@ -1265,8 +1267,10 @@ function initGoogleAuth() {
     try {
       driveUserInfo = JSON.parse(usuarioGuardado);
       mostrarPerfilActivo(driveUserInfo);
-      // Re-pedir token de Drive (silencioso si ya hay sesión de Google activa en el navegador)
-      solicitarAccesoDrive();
+      // NO abrir popup automáticamente: solo mostrar estado pendiente
+      document.getElementById('sync-status-wrap').style.display = 'flex';
+      document.getElementById('btn-sync-now').style.display = 'inline-flex';
+      setSyncStatus('', 'Sin sincronizar — pulsa Sincronizar');
       return;
     } catch (err) {
       console.error('FinSim_Usuario corrupto, se elimina:', err);
@@ -1307,6 +1311,15 @@ function setSyncStatus(estado, texto) {
   const txt = document.getElementById('sync-status-text');
   if (dot) dot.className = `sync-dot ${estado}`;
   if (txt) txt.textContent = texto;
+}
+
+/* ── Maneja el clic en "Sincronizar": conecta Drive si falta token, o sube/baja datos ── */
+function manejarClicSincronizar() {
+  if (!driveAccessToken) {
+    solicitarAccesoDrive(); // este clic es interacción directa → popup permitido
+  } else {
+    driveSubirDatos(true);
+  }
 }
 
 /* ── Subir datos locales a Drive (appDataFolder) ── */
