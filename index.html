@@ -475,6 +475,7 @@
     #auth-bar .sync-dot.error   { background: var(--danger); }
     @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.4;} }
     #google-signin-btn { flex-shrink: 0; }
+    #btn-sync-now { flex-shrink: 0; }
     #btn-signout { display: none; padding: 6px 14px; border-radius: 7px; font-size: 12px; font-weight: 600; cursor: pointer; border: 1px solid var(--border); background: var(--card-bg); color: var(--ink-soft); font-family: inherit; transition: all .15s; }
     #btn-signout:hover { background: var(--danger-lt); color: var(--danger); border-color: var(--danger); }
     #main { padding-top: 68px; }
@@ -629,7 +630,11 @@
     <div class="sync-dot" id="sync-dot"></div>
     <span id="sync-status-text" style="font-size:11px;">Sin sincronizar</span>
   </div>
-  <div id="mock-badge">🧪 Modo Simulación</div>
+  
+  <button class="btn-toolbar" id="btn-sync-now" style="display:none;padding:6px 12px;font-size:12px;" onclick="driveSubirDatos(true)" title="Sincronizar ahora">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+    Sincronizar
+  </button>
   <div id="perfil-usuario" style="display:none;align-items:center;gap:8px;">
     <img id="auth-user-avatar" src="" alt="Avatar" />
     <span id="auth-user-name" style="font-size:12px;color:var(--ink-soft);"></span>
@@ -1151,16 +1156,23 @@ function clearAllData(){
 }
 
 /* ══ GOOGLE DRIVE (MOCK) ══ */
-/* ══ AUTENTICACIÓN GOOGLE + PERSISTENCIA ══ */
-const CLIENT_ID = '583748125190-1e7j5k8jrkgapaja35e2ivk40jut93no.apps.googleusercontent.com'; // <-- Reemplaza con tu Client ID real de Google Cloud
-const LS_USUARIO = 'FinSim_Usuario';
+/* ══════════════════════════════════════════════════════════════════
+   AUTENTICACIÓN GOOGLE + SINCRONIZACIÓN CON GOOGLE DRIVE (appData)
+══════════════════════════════════════════════════════════════════ */
+const CLIENT_ID    = '583748125190-1e7j5k8jrkgapaja35e2ivk40jut93no.apps.googleusercontent.com'; // <-- tu Client ID real
+const DRIVE_SCOPE  = 'https://www.googleapis.com/auth/drive.appdata';
+const LS_USUARIO   = 'FinSim_Usuario';
+const DRIVE_FILE_NAME = 'finsim_data.json';
 
-/**
- * Decodifica el JWT (id_token) que devuelve Google para extraer nombre, email y foto.
- */
+let driveAccessToken = null;
+let driveUserInfo    = null;
+let _driveSyncTimer  = null;
+let _tokenClient     = null;
+
+/* ── Decodificar JWT del id_token de Google ── */
 function decodificarJWT(token) {
   const partes = token.split('.');
-  const payload = JSON.parse(
+  return JSON.parse(
     decodeURIComponent(
       atob(partes[1].replace(/-/g, '+').replace(/_/g, '/'))
         .split('')
@@ -1168,40 +1180,57 @@ function decodificarJWT(token) {
         .join('')
     )
   );
-  return payload;
 }
 
-/**
- * Callback que Google ejecuta al iniciar sesión correctamente.
- * Guarda el perfil del usuario en localStorage bajo "FinSim_Usuario".
- */
+/* ── Callback al iniciar sesión con Google (id_token) ── */
 function manejarRespuestaGoogle(respuesta) {
   try {
     const datos = decodificarJWT(respuesta.credential);
-    const usuario = {
-      nombre: datos.name,
-      email: datos.email,
-      foto: datos.picture
-    };
-    localStorage.setItem(LS_USUARIO, JSON.stringify(usuario));
-    mostrarPerfilActivo(usuario);
-    showToast('🔗', 'Sesión iniciada', `Bienvenido, ${escHtml(usuario.nombre)}.`, 'success', 4000);
+    driveUserInfo = { nombre: datos.name, email: datos.email, foto: datos.picture };
+    localStorage.setItem(LS_USUARIO, JSON.stringify(driveUserInfo));
+    mostrarPerfilActivo(driveUserInfo);
+
+    // Pedir token de acceso a Drive (appdata) para sincronizar
+    solicitarAccesoDrive();
   } catch (err) {
-    console.error('Error al procesar la respuesta de Google:', err);
+    console.error('Error al procesar login de Google:', err);
     showToast('❌', 'Error de inicio de sesión', 'No se pudo procesar la respuesta de Google.', 'danger');
   }
 }
 
-/**
- * Muestra el contenedor de perfil activo (#perfil-usuario) con foto y nombre,
- * y oculta el botón de Google.
- */
+/* ── Pedir / renovar token de acceso a Drive ── */
+function solicitarAccesoDrive() {
+  if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
+    setTimeout(solicitarAccesoDrive, 500);
+    return;
+  }
+  if (!_tokenClient) {
+    _tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: DRIVE_SCOPE,
+      callback: (tr) => {
+        if (tr.error) {
+          showToast('❌', 'Error de acceso a Drive', 'No se pudo obtener permiso para sincronizar.', 'danger');
+          return;
+        }
+        driveAccessToken = tr.access_token;
+        document.getElementById('btn-sync-now').style.display = 'inline-flex';
+        document.getElementById('sync-status-wrap').style.display = 'flex';
+        showToast('🔗', 'Conectado a Drive', `Sesión iniciada como ${escHtml(driveUserInfo.nombre)}. Buscando tus datos…`, 'success', 4000);
+        driveCargarDatos();
+      }
+    });
+  }
+  _tokenClient.requestAccessToken({ prompt: '' });
+}
+
+/* ── Mostrar perfil activo (oculta botón de login) ── */
 function mostrarPerfilActivo(usuario) {
-  const perfil = document.getElementById('perfil-usuario');
-  const avatar = document.getElementById('auth-user-avatar');
-  const nombre = document.getElementById('auth-user-name');
+  const perfil    = document.getElementById('perfil-usuario');
+  const avatar    = document.getElementById('auth-user-avatar');
+  const nombre    = document.getElementById('auth-user-name');
   const btnGoogle = document.getElementById('google-signin-btn');
-  const btnSignout = document.getElementById('btn-signout');
+  const btnSignout= document.getElementById('btn-signout');
 
   avatar.src = usuario.foto || '';
   nombre.textContent = usuario.nombre || usuario.email || 'Usuario';
@@ -1211,9 +1240,7 @@ function mostrarPerfilActivo(usuario) {
   btnSignout.style.display = 'inline-flex';
 }
 
-/**
- * Pinta el botón estándar de inicio de sesión de Google (solo si NO hay sesión guardada).
- */
+/* ── Pintar botón de login (solo si no hay sesión guardada) ── */
 function inicializarBotonGoogle() {
   if (typeof google === 'undefined' || !google.accounts || !google.accounts.id) {
     setTimeout(inicializarBotonGoogle, 500);
@@ -1231,16 +1258,16 @@ function inicializarBotonGoogle() {
   );
 }
 
-/**
- * Punto de entrada de autenticación: revisa localStorage ANTES de pintar nada.
- */
+/* ── Punto de entrada: revisa localStorage ANTES de pintar nada ── */
 function initGoogleAuth() {
   const usuarioGuardado = localStorage.getItem(LS_USUARIO);
   if (usuarioGuardado) {
     try {
-      const usuario = JSON.parse(usuarioGuardado);
-      mostrarPerfilActivo(usuario);
-      return; // No pintamos el botón de Google
+      driveUserInfo = JSON.parse(usuarioGuardado);
+      mostrarPerfilActivo(driveUserInfo);
+      // Re-pedir token de Drive (silencioso si ya hay sesión de Google activa en el navegador)
+      solicitarAccesoDrive();
+      return;
     } catch (err) {
       console.error('FinSim_Usuario corrupto, se elimina:', err);
       localStorage.removeItem(LS_USUARIO);
@@ -1249,18 +1276,19 @@ function initGoogleAuth() {
   inicializarBotonGoogle();
 }
 
-/**
- * Cierra la sesión: borra el perfil guardado y vuelve a mostrar el botón de Google.
- * Los datos financieros (movimientos, metas, etc.) NO se eliminan.
- */
+/* ── Cerrar sesión ── */
 function googleSignOut() {
   localStorage.removeItem(LS_USUARIO);
+  driveAccessToken = null;
+  driveUserInfo = null;
 
   const perfil = document.getElementById('perfil-usuario');
   perfil.style.display = 'none';
   perfil.classList.remove('show');
 
   document.getElementById('btn-signout').style.display = 'none';
+  document.getElementById('btn-sync-now').style.display = 'none';
+  document.getElementById('sync-status-wrap').style.display = 'none';
   document.getElementById('google-signin-btn').style.display = '';
   document.getElementById('google-signin-btn').innerHTML = '';
 
@@ -1269,11 +1297,122 @@ function googleSignOut() {
   }
 
   inicializarBotonGoogle();
-  showToast('👋', 'Sesión cerrada', 'Tu sesión de Google fue cerrada. Tus datos financieros locales se conservan.', 'info', 4000);
+  setSyncStatus('', '');
+  showToast('👋', 'Sesión cerrada', 'Tu sesión de Google fue cerrada. Tus datos locales se conservan en este dispositivo.', 'info', 4000);
 }
 
-/* driveSyncDebounced ya no aplica (no hay Drive real); se deja como no-op para no romper llamadas existentes */
-function driveSyncDebounced() {}
+/* ── Indicador visual de estado de sincronización ── */
+function setSyncStatus(estado, texto) {
+  const dot = document.getElementById('sync-dot');
+  const txt = document.getElementById('sync-status-text');
+  if (dot) dot.className = `sync-dot ${estado}`;
+  if (txt) txt.textContent = texto;
+}
+
+/* ── Subir datos locales a Drive (appDataFolder) ── */
+async function driveSubirDatos(manual = false) {
+  if (!driveAccessToken) {
+    if (manual) showToast('⚠️', 'Sin conexión a Drive', 'Inicia sesión con Google para sincronizar.', 'warning');
+    return;
+  }
+  setSyncStatus('syncing', 'Guardando…');
+
+  const data = {};
+  [LS_MOV, LS_META, LS_PRESUP, LS_CATS, LS_SUBS].forEach(k => {
+    const v = localStorage.getItem(k);
+    if (v) data[k] = JSON.parse(v);
+  });
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+
+  try {
+    // Buscar si ya existe el archivo
+    const sr = await fetch(
+      `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${DRIVE_FILE_NAME}'&fields=files(id)`,
+      { headers: { Authorization: `Bearer ${driveAccessToken}` } }
+    );
+    const sd = await sr.json();
+    const existingId = sd.files && sd.files.length > 0 ? sd.files[0].id : null;
+
+    if (existingId) {
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify({ name: DRIVE_FILE_NAME })], { type: 'application/json' }));
+      form.append('file', blob);
+      await fetch(`https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${driveAccessToken}` },
+        body: form
+      });
+    } else {
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify({ name: DRIVE_FILE_NAME, parents: ['appDataFolder'] })], { type: 'application/json' }));
+      form.append('file', blob);
+      await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${driveAccessToken}` },
+        body: form
+      });
+    }
+
+    setSyncStatus('synced', `Guardado ${new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}`);
+    if (manual) showToast('☁️', 'Sincronizado', 'Tus datos fueron guardados en Google Drive.', 'success', 3000);
+
+  } catch (err) {
+    console.error(err);
+    setSyncStatus('error', 'Error al guardar');
+    showToast('❌', 'Error de sincronización', 'No se pudo subir a Drive. Verifica tu conexión.', 'danger');
+  }
+}
+
+/* ── Descargar datos desde Drive y volcarlos a localStorage ── */
+async function driveCargarDatos() {
+  if (!driveAccessToken) return;
+  setSyncStatus('syncing', 'Descargando…');
+
+  try {
+    const sr = await fetch(
+      `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${DRIVE_FILE_NAME}'&fields=files(id)`,
+      { headers: { Authorization: `Bearer ${driveAccessToken}` } }
+    );
+    const sd = await sr.json();
+
+    if (!sd.files || sd.files.length === 0) {
+      setSyncStatus('synced', 'Sin datos previos en Drive');
+      showToast('☁️', 'Primer uso en esta cuenta', 'No se encontraron datos guardados en Drive. Se subirán tus datos locales.', 'info', 5000);
+      driveSubirDatos();
+      return;
+    }
+
+    const fr = await fetch(`https://www.googleapis.com/drive/v3/files/${sd.files[0].id}?alt=media`, {
+      headers: { Authorization: `Bearer ${driveAccessToken}` }
+    });
+    const data = await fr.json();
+
+    Object.entries(data).forEach(([k, v]) => localStorage.setItem(k, JSON.stringify(v)));
+
+    // Repintar toda la UI con los datos recién descargados
+    initCatSelect();
+    renderDashboard();
+    renderTablaMovimientos(mesActual());
+    renderMetas();
+    renderCatCards();
+    renderSuscripciones();
+
+    setSyncStatus('synced', 'Datos cargados de Drive');
+    showToast('☁️', 'Datos sincronizados', 'Se cargaron tus datos guardados desde Google Drive.', 'success', 4500);
+
+  } catch (err) {
+    console.error(err);
+    setSyncStatus('error', 'Error al cargar');
+    showToast('❌', 'Error al cargar Drive', 'No se pudieron obtener los datos de Drive.', 'danger');
+  }
+}
+
+/* ── Debounce: sube a Drive ~2.5s después del último cambio ── */
+function driveSyncDebounced() {
+  if (!driveAccessToken) return;
+  clearTimeout(_driveSyncTimer);
+  _driveSyncTimer = setTimeout(() => driveSubirDatos(), 2500);
+}
 
 /* ══ BÚSQUEDA ══ */
 function filtrarMovimientosEnTiempoReal(containerId,query,countElId){
@@ -1924,86 +2063,25 @@ function renderHistorial(){
   const sc=document.getElementById('hist-search-card');if(delMes.length>0){sc.style.display='block';document.getElementById('search-historial').value='';document.getElementById('search-count-historial').style.display='none';}else sc.style.display='none';
 }
 
-/* ══ BACKUP / RESTAURACIÓN (MULTI-DISPOSITIVO) ══ */
-
-/**
- * Genera y descarga un archivo .json con TODOS los datos financieros
- * + el perfil del usuario logueado (si existe), para llevarlos a otro dispositivo.
- */
-function guardarBackup() {
-  const data = {};
-  [LS_MOV, LS_META, LS_PRESUP, LS_CATS, LS_SUBS].forEach(k => {
-    const v = localStorage.getItem(k);
-    if (v) data[k] = JSON.parse(v);
-  });
-
-  // Incluir el usuario logueado (si existe) para que la sesión viaje con el backup
-  const usuario = localStorage.getItem(LS_USUARIO);
-  if (usuario) {
-    try { data[LS_USUARIO] = JSON.parse(usuario); } catch {}
-  }
-
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `finsim-backup-${mesActual()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-
-  showToast('💾', 'Backup guardado', 'Tu archivo de respaldo fue descargado exitosamente.', 'success', 3500);
+/* ══ BACKUP / PDF ══ */
+function guardarBackup(){
+  const data={};[LS_MOV,LS_META,LS_PRESUP,LS_CATS,LS_SUBS].forEach(k=>{const v=localStorage.getItem(k);if(v)data[k]=JSON.parse(v);});
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=`finsim-backup-${mesActual()}.json`;a.click();URL.revokeObjectURL(url);
+  showToast('💾','Backup guardado','Tu archivo de respaldo fue descargado exitosamente.','success',3500);
 }
-
-/**
- * Lee un archivo .json de backup (de otro dispositivo), valida su contenido,
- * lo inyecta en localStorage (incluyendo la sesión de usuario si viene incluida)
- * y recarga la página para reflejar todo el progreso.
- */
-function cargarBackup(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = function (e) {
-    try {
-      const data = JSON.parse(e.target.result);
-
-      // Validación mínima: que sea un backup de FinSim
-      if (!data[LS_MOV] && !data[LS_META] && !data[LS_SUBS] && !data[LS_USUARIO]) {
-        showToast('❌', 'Archivo inválido', 'El archivo no parece ser un backup de FinSim.', 'danger');
-        event.target.value = '';
-        return;
-      }
-
-      if (!confirm('¿Cargar este backup? Los datos actuales (movimientos, metas, historial y sesión) serán reemplazados por los del archivo.')) {
-        event.target.value = '';
-        return;
-      }
-
-      // Inyectar todas las claves financieras conocidas
-      [LS_MOV, LS_META, LS_PRESUP, LS_CATS, LS_SUBS].forEach(k => {
-        if (data[k] !== undefined) {
-          localStorage.setItem(k, JSON.stringify(data[k]));
-        }
-      });
-
-      // Inyectar la sesión de usuario si viene en el backup
-      if (data[LS_USUARIO]) {
-        localStorage.setItem(LS_USUARIO, JSON.stringify(data[LS_USUARIO]));
-      }
-
-      showToast('📂', 'Backup restaurado', 'Los datos fueron cargados correctamente. Recargando…', 'success', 2500);
-
-      // Recargar para que initGoogleAuth() detecte la sesión y todo se repinte limpio
-      setTimeout(() => location.reload(), 800);
-
-    } catch (err) {
-      console.error(err);
-      showToast('❌', 'Error al leer', 'El archivo está corrupto o no es JSON válido.', 'danger');
-      event.target.value = '';
-    }
-  };
-  reader.readAsText(file);
+function cargarBackup(event){
+  const file=event.target.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=function(e){
+    try{const data=JSON.parse(e.target.result);if(!data[LS_MOV]&&!data[LS_META]){showToast('❌','Archivo inválido','El archivo no parece ser un backup de FinSim.','danger');return;}
+    if(!confirm('¿Cargar este backup? Los datos actuales serán reemplazados.'))return;
+    Object.entries(data).forEach(([k,v])=>localStorage.setItem(k,JSON.stringify(v)));
+    initCatSelect();renderDashboard();renderTablaMovimientos(mesActual());renderMetas();renderCatCards();renderSuscripciones();
+    showToast('📂','Backup restaurado','Los datos fueron cargados correctamente.','success',4000);}
+    catch{showToast('❌','Error al leer','El archivo está corrupto o no es JSON válido.','danger');}
+    event.target.value='';
+  };reader.readAsText(file);
 }
 function exportarPDF(){
   if(typeof window.jspdf==='undefined'&&typeof jsPDF==='undefined'){showToast('⚠️','jsPDF no cargado','La librería PDF no está disponible.','warning');return;}
@@ -2046,10 +2124,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(sm){sm.value=10000000;document.getElementById('slider-monto-val').textContent=fmt(10000000);}
   if(sp){sp.value=24;document.getElementById('slider-plazo-val').textContent='24 meses';}
 
-  // Chequeo de sesión: si hay usuario guardado, se muestra el perfil sin esperar a Google.
+  // Verifica sesión guardada ANTES de pintar el botón de Google (persistencia al recargar)
   initGoogleAuth();
-  // Si no había sesión, initGoogleAuth ya invocó inicializarBotonGoogle(), que reintenta
-  // hasta que el script de Google esté disponible (sin bloquear el resto de la app).
 
   const footer=document.getElementById('footer');
   function fixFooter(){footer.style.marginLeft=window.innerWidth<=768?'0':'240px';document.getElementById('auth-bar').style.width=window.innerWidth<=768?'100%':`calc(100% - 240px)`;}
