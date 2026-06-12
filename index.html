@@ -1378,31 +1378,42 @@ async function driveSubirDatos(manual = false) {
 
 /* ── Descargar datos desde Drive y volcarlos a localStorage ── */
 async function driveCargarDatos() {
-  if (!driveAccessToken) return;
+  if (!driveAccessToken) {
+    console.log('→ driveCargarDatos: NO hay driveAccessToken');
+    return;
+  }
+  console.log('→ driveCargarDatos: iniciando búsqueda en Drive...');
   setSyncStatus('syncing', 'Descargando…');
 
   try {
     const sr = await fetch(
-      `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${DRIVE_FILE_NAME}'&fields=files(id)`,
+      `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name='${DRIVE_FILE_NAME}'&fields=files(id,modifiedTime)`,
       { headers: { Authorization: `Bearer ${driveAccessToken}` } }
     );
     const sd = await sr.json();
+    console.log('→ Respuesta búsqueda de archivo:', sd);
 
     if (!sd.files || sd.files.length === 0) {
+      console.log('→ NO se encontró archivo en Drive. Subiendo datos locales...');
       setSyncStatus('synced', 'Sin datos previos en Drive');
       showToast('☁️', 'Primer uso en esta cuenta', 'No se encontraron datos guardados en Drive. Se subirán tus datos locales.', 'info', 5000);
       driveSubirDatos();
       return;
     }
 
+    console.log('→ Archivo encontrado, ID:', sd.files[0].id, 'Modificado:', sd.files[0].modifiedTime);
+
     const fr = await fetch(`https://www.googleapis.com/drive/v3/files/${sd.files[0].id}?alt=media`, {
       headers: { Authorization: `Bearer ${driveAccessToken}` }
     });
     const data = await fr.json();
+    console.log('→ Contenido descargado:', data);
 
-    Object.entries(data).forEach(([k, v]) => localStorage.setItem(k, JSON.stringify(v)));
+    Object.entries(data).forEach(([k, v]) => {
+      localStorage.setItem(k, JSON.stringify(v));
+      console.log(`→ localStorage["${k}"] actualizado:`, v);
+    });
 
-    // Repintar toda la UI con los datos recién descargados
     initCatSelect();
     renderDashboard();
     renderTablaMovimientos(mesActual());
@@ -1414,7 +1425,7 @@ async function driveCargarDatos() {
     showToast('☁️', 'Datos sincronizados', 'Se cargaron tus datos guardados desde Google Drive.', 'success', 4500);
 
   } catch (err) {
-    console.error(err);
+    console.error('→ ERROR en driveCargarDatos:', err);
     setSyncStatus('error', 'Error al cargar');
     showToast('❌', 'Error al cargar Drive', 'No se pudieron obtener los datos de Drive.', 'danger');
   }
